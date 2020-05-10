@@ -1,0 +1,82 @@
+\subsection{Создание распознающей сверточной нейронной сети}
+Финальным шагом распознавания текста с изображений captcha будет реализация сверточной нейронной сети. Мы будем использовать модификацию стандартной архитектуры сверточной нейронной сети LeNet 5\cite{lenet-5-overview}. На этом этапе можно было бы применить и другие архитектуры глубоких нейронных сетей, например, ResNet\cite{resnet-overview}, Inception\cite{inception-overview} или VGG\cite{vgg-overview}, но выбор LeNet 5-подобной архитектуры был сделан в силу её простоты, скорости обучения при сохранении высокой точности результатов.
+
+Поскольку изначально LeNet 5 направлена на распознавание отдельных символов, нам придется предварительно проводить сегментирование входного изображения, после чего подавать соответствующие фрагменты в обработку нейронной сети.
+Эта идея похожа на подход исследователей в работе\cite{multidigits-stanford}.
+
+Стоит отметить, что существуют архитектуры сетей, которые способны распознавать несколько символов сразу, то есть работать с изображениями без предварительной обработки. К таким архитектурам относится, например, SDNN\cite{sdnn-overview}. Тем не менее, был выбран подход с предварительным сегментированием из-за прозрачности кода и хорошего быстродействия. Некоторые детали реализации процесса сегментирования были взяты из статьи на kaggle\cite{kaggle-segmentation}.
+
+В целом, процесс решения картинки captcha, очищенной от защитных признаков состоит из следующих шагов:
+\begin{itemize}
+	\item превращение монохромного изображения в бинарное, то есть состоящего только из черных или белых пикселей;
+	\item инвертирование изображения для получения белых символов на черном фоне;
+	\item сегментация изображения на символы;
+	\item преобразование символов в картинки 32х32;
+	\item подача каждой картинки с символом на вход сверточной сети и распознавание символа;
+	\item восстановление порядка символов по координатам содержащих их сегментов в исходном изображении.
+	
+\end{itemize}
+
+Для произведения подготовки изображения воспользуемся библиотекой opencv.
+Сначала превращаем изображение в бинарное и выводим его на экран: листинг \ref{lst:segmentation-to-binary}.
+\begin{lstlisting}[language=PHP,basicstyle=\fontsize{11}{11}\selectfont,tabsize=4,breaklines=true,caption={Преобразование изображения в бинарное.},captionpos=b,label={lst:segmentation-to-binary}]
+(thresh, img_bin) = cv2.threshold(img_gray, 128, 255, cv2.THRESH_OTSU)
+plt.imshow(img_bin,cmap='gray')
+plt.title('Threshold: {}'.format(thresh))
+plt.show()
+\end{lstlisting}
+
+Теперь инвертируем цвета исходной картинки, чтобы получить белые символы на черном фоне: листинг \ref{lst:segmentation-invert}.
+\begin{lstlisting}[language=PHP,basicstyle=\fontsize{11}{11}\selectfont,tabsize=4,breaklines=true,caption={Инвертирование изображения.},captionpos=b,label={lst:segmentation-invert}]
+img_bin=255-img_bin
+plt.imshow(img_bin,cmap='gray')
+plt.show()
+\end{lstlisting}
+
+Извлечение контуров произведем функцией findContours() библиотеки opencv. Поскольку эта функция изменяет исходное изображение, мы создаем его копию. Реализация приводится в листинге \ref{lst:segmentation-get-contours}.
+\begin{lstlisting}[language=PHP,basicstyle=\fontsize{11}{11}\selectfont,tabsize=4,breaklines=true,caption={Обнаружение контуров.},captionpos=b,label={lst:segmentation-get-contours}]
+_,contours,_ = cv2.findContours(img_bin.copy(), cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+\end{lstlisting}
+
+После получения всех контуров мы можем получить ограничивающий прямоугольник любого из них и отфильтровать по площади лишние мелкие прямоугольники, оставив только области, содержащие символы (а не их части).
+
+На заключительном шаге мы рассматриваем каждый действительный прямоугольник, содержащий символ, и строим по нему изображение 32$\times$32 пикселей, помещая символ в центре. Восстановить порядок символов можно по координатам содержащего его прямоугольника. На этом этап подготовки изображения можно считать завершенным.
+
+Переходим к реализации сверточной нейронной сети LeNet5 с небольшими модификациями. За основу возьмем TensorFlow и keras. На вход сеть принимает бинарное изображение символа разрешения 32$\times$32 пикселей, на выходе сеть дает ответ, касательно того, какой символ изображен на картинке.
+
+Модель состоит из 4-х слоев свертки с фильтрами размера 3х3 и шагом 1. В качестве активационной функции используется ReLU. За каждым слоем свертки следует стандартный слой максимального пулинга с фильтром 2$\times$2 и шагом 2. После каждой из 4-х групп слоев мы добавляем слой dropout, который со случайным шансом исключает некоторый процент нейронов из рассмотрения и помогает бороться с проблемой переобучения сети. После группы слоев свертки идет один скрытый полносвязный слой и, наконец, слой выходных нейронов, состоящий из 36 нейронов – по одному на каждый символ английского алфавита и цифры. В качестве активационной функции на последнем этапе удобно использовать softmax, так как это позволяет рассматривать ответ сети в качестве распределения вероятностей. Структура модели приводится в листинге \ref{lst:cnn-model}.
+\begin{lstlisting}[language=PHP,basicstyle=\fontsize{11}{11}\selectfont,tabsize=4,breaklines=true,caption={Структура модели для распознавания символов.},captionpos=b,label={lst:cnn-model}]
+model = models.Sequential()
+# convolutional layers
+model.add(layers.Conv2D(32, (3, 3), strides=(1, 1), padding='same',
+input_shape=(32, 32, 1)))
+model.add(layers.Activation('relu'))
+model.add(layers.MaxPooling2D(pool_size=(2, 2), padding='same'))
+model.add(layers.Dropout(self.keep_prob))
+
+model.add(layers.Conv2D(64, (3, 3), strides=(1, 1), padding='same'))
+model.add(layers.Activation('relu'))
+model.add(layers.MaxPooling2D(pool_size=(2, 2), padding='same'))
+model.add(layers.Dropout(self.keep_prob))
+
+model.add(layers.Conv2D(128, (3, 3), strides=(1, 1), padding='same'))
+model.add(layers.Activation('relu'))
+model.add(layers.MaxPooling2D(pool_size=(2, 2), padding='same'))
+model.add(layers.Dropout(self.keep_prob))
+
+model.add(layers.Conv2D(256, (3, 3), strides=(1, 1), padding='same'))
+model.add(layers.Activation('relu'))
+model.add(layers.MaxPooling2D(pool_size=(2, 2), padding='same'))
+model.add(layers.Dropout(self.keep_prob))
+
+# dense layers
+model.add(layers.Flatten())
+model.add(layers.Dense(1024))
+model.add(layers.Activation('relu'))
+model.add(layers.Dropout(self.keep_prob))
+
+model.add(layers.Dense(36))
+model.add(layers.Activation('softmax'))
+\end{lstlisting}
+
+Обучение модели производится на большом объеме изображений, очищенных от защитных признаков, которые были созданы на предыдущих этапах. После завершения обучения модель может работать с не виденными ранее картинками и успешно распознавать символы.

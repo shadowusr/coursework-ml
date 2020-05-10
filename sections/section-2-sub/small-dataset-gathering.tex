@@ -1,0 +1,62 @@
+\subsection{Сбор данных и создание датасета настоящих данных}
+На этом начальном этапе нам нужно просто получить около тысячи изображений captha и решений к ним. В качестве целевого сайта будем рассматривать vk.com. Для появления captcha достаточно «спровоцировать» механизмы защиты выполнением однотипных действий. 
+
+При возникновении необходимости решения captcha обратимся к стороннему сервису, работники которого выполнят решение вручную, после чего произведем повторный запрос к vk API для того, чтобы убедиться в правильности решения. Если решение оказалось корректным, сохраним изображение и соответвующий ему ответ, после чего начнем процесс с начала.
+
+Таким образом, построение первоначального набора данных состоит из таких этапов:
+\begin{enumerate}[1)]
+	\item выбор подходящего сообщества и содержимого постов;
+	\item попытка размещения поста;
+	\item получение изображения captcha, обращение к стороннему сервису для получения решения;
+	\item изображение с captcha и решение сохраняется для дальнейшего использования.
+
+\end{enumerate}
+
+Этот процесс автоматизируем при помощи небольшого скрипта на языке PHP. В листинге \ref{lst:captcha-gatherer} приводится его немного упрощенная версия.
+
+\begin{lstlisting}[language=PHP,basicstyle=\fontsize{11}{11}\selectfont,tabsize=4,breaklines=true,caption={Скрипт для получения и сохранения решений captcha.},captionpos=b,label={lst:captcha-gatherer}]
+$client = new GuzzleHttp\Client([
+	'base_uri' => 'https://api.vk.com/method/',
+]);
+$anticaptcha = new Anticaptcha\ImageToText();
+
+$sentPostsCount = 0;
+while ($sentPostsCount < 1000) {
+	$requestParams = [
+		'form_params' => [
+			'access_token' => $config->vkToken,
+			'v' => '5.95',
+			'owner_id' => $config->postContent,
+			'message' => $config->groupId,
+		],
+	];
+	
+	$response = $client->request('POST', 'wall.post', $requestParams);
+	$response = json_decode($response->getBody()->getContents(), true);
+	
+	if (@$response['error']['error_code'] != 14) {
+		continue; // skip the iteration if captcha is not needed
+	}
+	
+	$captchaImage = file_get_contents($response['error']['captcha_img']); // loading a captcha image
+	$requestParams['captcha_sid'] = $response['error']['captcha_sid'];
+	
+	$anticaptcha->setFile($captchaImage);
+	$anticaptcha->createTask();
+	$anticaptcha->waitForResult();
+	
+	$requestParams['captcha_key'] = $anticaptcha->getTaskSolution(); // getting solution
+	
+	// second request to check whether captcha was solved right
+	$response = $client->request('POST', 'wall.post', $requestParams);
+	$response = json_decode($response->getBody()->getContents(), true);
+	
+	if (isset($response['error'])) {
+		continue; // solution was incorrect
+	}
+	
+	// saving the image in case it was solved correctly
+	saveImage($captchaImage, $requestParams['captcha_key']);
+	$sentPostsCount++;
+}
+\end{lstlisting}
